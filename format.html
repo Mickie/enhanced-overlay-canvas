@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html>
+     <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width,height=device-height,user-scalable=no" />
+        <title>here is the demonstration</title>
+        <script src="js/jquery.min.js"></script>
+        <script src="js/canvasresize.js"></script>
+         <script src="js/binaryajax.js"></script>
+         <script src="js/exif.js"></script>
+         <script src="js/fabric.js"></script>
+     </head>
+     <body>
+        <!-- this is the demonstration about how to load and compress pic into browser depending on different os,crop images and output as a new one -->
+        <input type="file" accept="image/*" id="imgInput">
+
+        <div class="result" style="margin-top:30px;position:relative;width:100%;">
+            <canvas id="btnCanvas" ></canvas>
+            <canvas id="upperCanvas"></canvas>
+        </div>
+
+        <div class="showClipArea" style="margin-top:10px;"></div><!-- show result instantly -->
+
+        <script type="text/javascript">
+
+            var el=document.getElementById('imgInput');
+            el.addEventListener('change',loadImg,false);
+
+            function loadImg(event){
+                if(event.target.files.length==1 && event.target.files[0].type.indexOf('image/')==0){
+                    var fileObj=event.target.files[0];
+                    var os=detectOs();
+                    var imgHandler= new ImgHandler(fileObj,os);
+                    imgHandler.renderImg();
+                }
+                else{
+                    alert('an error happened loading image');
+                }
+            }
+
+            function detectOs(){
+                var browser=navigator.userAgent;
+                var isIOS=!!browser.match(/\(i[^;]+;(U;)? CPU.+Mac OS X/);
+                var isADR=(browser.indexOf('Android')>-1 || browser.indexOf('Linux')>-1);
+                if(isIOS){console.log('this is ios ');return 'ios'};
+                if(isADR){console.log('this is android');return 'adr'};
+                if(1){console.log('this is desktop');return 'desktop'};
+            }
+
+            // gloable delegate helper
+            var delegate=function(object,method){
+                return function(){
+                    method.apply(object,arguments);
+                }
+            }
+
+            //in charge of compress image
+            var ImgHandler=function(imgfile,theos){
+
+                this.file=imgfile;
+                this.os=theos;
+
+                this.renderImg=function(){
+
+                    if(this.os=='ios'){
+                        this.iosCompress(delegate(this,onCompressReady));
+                    }
+                    else{
+                        this.adrCompress(delegate(this,onCompressReady));
+                    }
+
+                    function onCompressReady(returnImgSrc){
+                        var src= returnImgSrc;
+                        var img=document.createElement('img');
+                        img.src=src;
+                        var c1=document.getElementById('btnCanvas');
+                        var c2=document.getElementById('upperCanvas');
+                        var fabricHandler= new FabricHandler(img,c1,c2);
+                        fabricHandler.loadToBtnCanvas();
+                    }
+                }
+
+                this.iosCompress=function(aCallback){ //apply canvasresize.js along with binaryajax and exif before loading to memory
+                                                      //to avoid memory crush
+                    var _file=this.file,
+                        _callback=aCallback,
+                        _desiredW=300,
+                        _desiredH=300;
+
+                    canvasResize(_file,{
+                        width:_desiredW,
+                        height:_desiredH,
+                        crop:false,
+                        quality:95,
+                        callback:function(data){
+                            _callback(data);
+                        }
+                    })
+                }
+
+                this.adrCompress=function(aCallback){
+
+                    var _file=this.file,
+                        _callback=aCallback,
+                        _src=URL.createObjectURL(_file);
+
+                    var renewImgSrc= new RenewImgSrc();
+                    renewImgSrc.returnNewImgSrc(_src,delegate(this,imgSrcReady));
+
+                    function imgSrcReady(returnImgSrc){
+                        _callback(returnImgSrc);
+                    }
+                }
+
+
+                var RenewImgSrc=function(){ // compress prototype;
+
+                    var _this=this,
+                        _limitW=1000,// desired width
+                        _limitH=1000;// desired height
+
+                    _this.returnNewImgSrc=function(oImgSrc,aCallback){
+
+                        var tmpImg=document.createElement('img');
+                        tmpImg.setAttribute('src',oImgSrc);
+                        tmpImg.onload=function(){
+                            var ow=this.width;
+                            var oh=this.height;
+                            if(exceedsLimit(_limitW,_limitH,ow,oh)){
+                                var tmpCanvas=document.createElement('canvas');
+                                var ctx=tmpCanvas.getContext('2d');
+                                var optImgSize=resize(_limitW,_limitH,ow,oh);
+                                tmpCanvas.width=optImgSize.w;
+                                tmpCanvas.height=optImgSize.h;
+                                ctx.drawImage(this,0,0,tmpCanvas.width,tmpCanvas.height);
+                                var imgSrc=tmpCanvas.toDataURL('image/jpeg',0.95);
+                                aCallback(imgSrc);
+                            }
+                            else{
+                                var imgSrc=oImgSrc;
+                                aCallback(imgSrc);
+                            }
+                        }
+                    }
+
+                    // private
+                    function exceedsLimit(maxW,maxH,imgW,imgH){
+                        return( imgW>maxW || imgH>maxH);
+                    }
+
+                    function resize(maxW,maxH,imgW,imgH){
+                        var d={w:imgW,h:imgH};
+                        if(imgW>maxW){
+                            d.w=maxW;
+                            d.h=maxW*imgH/imgW;
+                        }
+                        if(d.h>maxH){
+                            d.h=maxH;
+                            d.w=maxH*imgW/imgH;
+                        }
+                        return d;
+                    }
+                }
+            }
+
+            //in charge of crop image and output new one
+            var FabricHandler=function(anImg,domCanvas1,domCanvas2){
+
+                var _oImg=anImg,
+                    _oImgWidth,
+                    _oImgHeight,
+                    _btnCanvas=domCanvas1,
+                    _upperCanvas=domCanvas2,
+                    _fabCanvas,
+                    _fabRectArray;
+
+                this.loadToBtnCanvas=function(){ //turn input img into canvas as background
+
+                    var self=this;
+                    _oImg.onload=function(){
+                        _oImgWidth=this.width;
+                        _oImgHeight=this.height;
+                        _btnCanvas.width=_oImgWidth;
+                        _btnCanvas.height=_oImgHeight;
+                        _btnCanvas.getContext('2d').drawImage(this,0,0);
+                        _btnCanvas.style.backgroundColor='rgba(0,0,0,1)';
+                        self.createFabCanvas(_upperCanvas.id,_btnCanvas.width,_btnCanvas.height);
+                    }
+                }
+
+                this.createFabCanvas=function(canvasId,canvasWidth,canvasHeight){ //create fabric canvas
+
+                    _fabCanvas=new fabric.Canvas(canvasId,{
+                        selection:false
+                    });
+                    _fabCanvas.setWidth(canvasWidth);
+                    _fabCanvas.setHeight(canvasHeight);
+                    document.getElementsByClassName('canvas-container')[0].style.marginTop=-canvasHeight+'px';
+                    this.fabCanvasDrawRect(canvasWidth,canvasHeight);
+                }
+
+                this.fabCanvasDrawRect=function(canvaswidth,canvasheight){ //add rect on top fab canvas as operator field
+
+                    _fabRectArray=returnFabRectPos(canvaswidth,canvasheight);
+                    var rect_x=_fabRectArray.leftTopX;
+                    var rect_y=_fabRectArray.leftTopY;
+                    var rect_w=_fabRectArray.width;
+                    var rect_h=_fabRectArray.height;
+                    var rect=new fabric.Rect({
+                        width:rect_w,
+                        height:rect_h,
+                        left:rect_x,
+                        top:rect_y,
+                        fill:'transparent',
+                        hasRotatingPoint:false,
+                        borderColor:'#34bbff',
+                        cornerColor:'#34bbff',
+                        cornerSize:18,
+                        transparentCorners:false,
+                        targetFindTolerance:50,
+                        skipTargetFind:true,
+                        minScaleLimit:0.2,
+                        borderOpacityWhenMoving:1
+                    })
+
+                    var setControlStyle=function(controls,fabRect){
+                        var args=controls;
+                        for(var i=0;i<args.length;i++){
+                            var item=args[i];
+                            fabRect.setControlVisible(item,false);
+                        }
+                    }
+
+                    setControlStyle(['tl','tr','bl','br'],rect);
+                    _fabCanvas.add(rect).calcOffset().setActiveObject(rect).renderAll();
+                    var rectMethod= new RectMethod(_fabCanvas,rect,delegate(this,this.outputBtnCanvasImgData));
+                    rectMethod.applyToCanvas();
+                }
+
+                this.outputBtnCanvasImgData=function(rectPos){
+                    var selectImgData=_btnCanvas.getContext('2d').getImageData(rectPos.leftTopX,rectPos.leftTopY,rectPos.width,rectPos.height);
+                    var tmpCanvas=document.createElement('canvas');
+                    tmpCanvas.width=rectPos.width;
+                    tmpCanvas.height=rectPos.height;
+                    tmpCanvas.getContext('2d').putImageData(selectImgData,0,0);
+                    var b64=tmpCanvas.toDataURL('image/jpeg',0.95);
+                    this.showInResultDiv(b64);
+                }
+
+                this.showInResultDiv=function(imgSrc){
+                    var div=document.getElementsByClassName('showClipArea')[0];
+                    div.innerHTML="<img src='"+imgSrc+"'>";
+                }
+
+                var RectMethod=function(canvasObj,rectObj,callback){ // add rect field functionality
+                        var rect=rectObj,
+                            canvas=canvasObj,
+                            myCallback=callback,
+                            rectPosObj={},
+                            boundsObj={
+                                leftTopX:0,
+                                leftTopY:0,
+                                width:canvas.width,
+                                height:canvas.height
+                            },
+                            boundsLeft=boundsObj.leftTopX,
+                            boundsTop=boundsObj.leftTopY,
+                            boundsRight=boundsObj.width-boundsObj.leftTopX,
+                            boundsBtn=boundsObj.height-boundsObj.leftTopY;
+
+                        this.applyToCanvas=function(){
+                            canvas.on('object:moving',this.onRectMove);
+                            canvas.on('object:scaling',this.onRectScale);
+                            canvas.on('mouse:down',this.onParentCanvasMouseAct);
+                            canvas.on('mouse:move',this.onParentCanvasMouseAct);
+                            canvas.on('mouse:up',this.onParentCanvasMouseAct);
+                        }
+
+
+                        this.onRectMove=function(){
+
+                                var left=rect.left,
+                                    top=rect.top,
+                                    width=rect.getWidth(),
+                                    height=rect.getHeight();
+
+                                rect.setLeft(Math.min(Math.max(left,boundsLeft),boundsRight-width));
+                                rect.setTop(Math.min(Math.max(top,boundsTop),boundsBtn-height));
+                                updateRectPos();
+                        }
+
+                        this.onRectScale=function(){
+
+                            var left=rect.getLeft(),
+                                top=rect.getTop(),
+                                width=rect.getWidth(),
+                                height=rect.getHeight(),
+                                right=left+width,
+                                btn=top+height;
+
+                            if(left<boundsLeft){
+                                rect.left=boundsLeft;//constrain scaling area
+                                rect.width=width;
+                                rect.scaleX=(width+left)/width;
+                            }
+                            if(top<boundsTop){
+                                rect.top=boundsTop;
+                                rect.height=height;
+                                rect.scaleY=(height+top)/height;
+                            }
+                            if(right>boundsRight){
+                                rect.width=boundsRight-rect.left;
+                                rect.scaleX=1;
+                            }
+                            if(btn>boundsBtn){
+                                rect.height=boundsBtn-rect.top;
+                                rect.scaleY=1;
+                            }
+                            updateRectPos();
+                        }
+
+                        this.onParentCanvasMouseAct=function(){
+                            canvas.setActiveObject(rect).renderAll();
+                        }
+
+                        var updateRectPos=function(){
+                            rectPosObj={
+                                leftTopX:rect.getLeft(),
+                                leftTopY:rect.getTop(),
+                                width:rect.getWidth(),
+                                height:rect.getHeight()
+                            };
+                            myCallback(rectPosObj);
+                        }
+
+                }
+
+
+
+                //private
+
+                function returnFabRectPos(canvasWidth,canvasHeight){
+                    var posObj={};
+                    var w=canvasWidth;
+                    var h=canvasHeight;
+                    var ratio=0.8;// percent for longer side in terms of canvasWidth;
+                    if(w>h){
+                        posObj.width=parseInt(w*ratio);
+                        posObj.height=parseInt(w*(1-ratio));
+                    }else{
+                        posObj.height=parseInt(w*ratio);
+                        posObj.width=parseInt(w*(1-ratio));
+                    }
+                    posObj.leftTopX=parseInt((w-posObj.width)/2);
+                    posObj.leftTopY=parseInt((h-posObj.height)/2);
+                    return posObj;
+                }
+            }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        </script>
+     </body>
+</html>
